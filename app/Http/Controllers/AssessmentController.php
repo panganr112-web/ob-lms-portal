@@ -14,14 +14,21 @@ class AssessmentController extends Controller
     }
 
     public function login(Request $request) {
-        $credentials = $request->validate([
+        $request->validate([
             'username' => ['required'],
             'password' => ['required'],
         ]);
+
+        $credentials = [
+            'email' => $request->username,
+            'password' => $request->password,
+        ];
+
         if (Auth::attempt($credentials)) {
             $request->session()->regenerate();
             return redirect()->intended('dashboard');
         }
+
         return back()->withErrors(['username' => 'Invalid credentials.']);
     }
 
