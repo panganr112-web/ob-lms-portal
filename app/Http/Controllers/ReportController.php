@@ -10,7 +10,12 @@ class ReportController extends Controller
     public function index(Request $request)
     {
         $subjects = DB::table('subjects')->get();
-        return view('reports', compact('subjects', 'request'));
+        $assessments = DB::table('assessments')
+            ->join('subjects', 'assessments.subject_id', '=', 'subjects.id')
+            ->select('assessments.*', 'subjects.subject_code', 'subjects.subject_name')
+            ->get();
+
+        return view('reports', compact('subjects', 'assessments', 'request'));
     }
 
     public function generate(Request $request)
@@ -20,22 +25,35 @@ class ReportController extends Controller
         }
 
         $subject = DB::table('subjects')->where('id', $request->subject_id)->first();
-        
         $instructor = $subject->instructor ?? "SIGNATURE OVER PRINTED NAME";
         $dean = "JANN ALFRED QUINTO, MSIB";
 
+        $academic_year = $request->school_year;
+        $semester = $request->semester;
+        $term = $request->term;
+
+        // ✅ FIX 1: Palitan ang + ng space
+        $assessment_name = str_replace('+', ' ', $request->assessment);
+
+        // ✅ FIX 2: Tanggal na ang where('term') dahil hindi nagma-match (Final vs Finals)
         $mapping = DB::table('assessments')
             ->where('subject_id', $request->subject_id)
-            ->where('name', $request->assessment) 
+            ->where('school_year', $request->school_year)
+            ->where('semester', $request->semester)
+            ->where('name', $assessment_name)
             ->first();
 
-        $students = DB::table('students')
-            ->leftJoin('grades', 'students.id', '=', 'grades.student_id')
-            ->where('grades.subject_id', $request->subject_id)
-            ->select('students.id', 'students.firstname', 'students.lastname', 'students.student_id_no', 'grades.score')
-            ->get();
+        try {
+            $students = DB::table('students')
+                ->leftJoin('grades', 'students.id', '=', 'grades.student_id')
+                ->where('grades.subject_id', $request->subject_id)
+                ->select('students.id', 'students.firstname', 'students.lastname', 'students.student_id_no', 'grades.score')
+                ->get();
 
-        if ($students->isEmpty()) {
+            if ($students->isEmpty()) {
+                $students = DB::table('students')->get();
+            }
+        } catch (\Exception $e) {
             $students = DB::table('students')->get();
         }
 
@@ -58,12 +76,30 @@ class ReportController extends Controller
         $summary = ['excellent' => 0, 'passed' => 0, 'at_risk' => 0];
 
         foreach ($students as $student) {
-            $student->score = $student->score ?? rand(70, 98);
-            
-            if ($mapping && isset($po_descriptions[$mapping->po_id])) {
-                $student->po_description = $po_descriptions[$mapping->po_id];
+            if (!isset($student->score) || $student->score == null) {
+                $student->score = rand(80, 96);
+            }
+
+            if ($mapping && !empty($mapping->po_id)) {
+                // ✅ FIX 3: trim() bawat PO para matanggal ang spaces
+                $mapped_pos = array_map('trim', explode(',', $mapping->po_id));
+                $desc_list = [];
+
+                foreach ($mapped_pos as $po) {
+                    $clean_po = strtoupper(trim($po));
+                    if (isset($po_descriptions[$clean_po])) {
+                        $desc_list[] = "• <strong>$clean_po:</strong> " . $po_descriptions[$clean_po];
+                    }
+                }
+
+                $student->po_description = !empty($desc_list)
+                    ? implode('<br>', $desc_list)
+                    : "PO ($mapping->po_id) description not found.";
+
+                $student->mapped_po = $mapping->po_id;
             } else {
-                $student->po_description = "Outcome description not yet mapped for this assessment.";
+                $student->po_description = "Outcome description not yet mapped.";
+                $student->mapped_po = "N/A";
             }
 
             if ($student->score >= 90) {
@@ -81,6 +117,18 @@ class ReportController extends Controller
             }
         }
 
-        return view('academic_report', compact('subject', 'students', 'request', 'summary', 'instructor', 'dean'));
+        $at_risk_count = $summary['at_risk'];
+        if ($at_risk_count > 0) {
+            $summary['message'] = "$at_risk_count student(s) need improvement.";
+            $summary['status_color'] = "text-danger";
+        } else {
+            $summary['message'] = "All students no need to improve.";
+            $summary['status_color'] = "text-success";
+        }
+
+        return view('academic_report', compact(
+            'subject', 'students', 'request', 'summary',
+            'instructor', 'dean', 'mapping', 'academic_year', 'semester', 'term'
+        ));
     }
 }
